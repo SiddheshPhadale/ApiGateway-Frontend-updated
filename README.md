@@ -84,15 +84,7 @@ npm run lint
 
 ## Backend configuration and API routes
 
-The Axios client is configured in `src/App.jsx` with this base URL:
-
-```js
-const api = axios.create({
-  baseURL: 'http://localhost:8080',
-});
-```
-
-If your backend runs elsewhere, update the base URL in `src/App.jsx` or replace it with an environment-based configuration.
+The Axios clients use `VITE_API_BASE_URL`, with `http://localhost:8080` as the local default. Copy `.env.example` to `.env` and change the URL if your backend runs elsewhere. Do not put secrets in frontend environment variables; Vite variables are exposed to the browser.
 
 The frontend currently uses these backend routes:
 
@@ -115,6 +107,22 @@ The frontend currently uses these backend routes:
 | Send a request through the gateway | Selected method | `/proxy/{endpointPath}` |
 
 Confirm these routes against the controllers in your backend if you change the API mappings.
+
+## Analytics data integration
+
+The analytics UI calls the authenticated backend routes:
+
+| Purpose | Method | Route |
+|---|---|---|
+| Provider request metrics | `GET` | `/api/analytics/provider/metrics` |
+| Provider anomalies | `GET` | `/api/analytics/provider/anomalies` |
+| Recent Kafka-persisted request logs | `GET` | `/api/analytics/provider/stream` |
+| Provider traffic projection | `GET` | `/api/analytics/provider/chart-data` |
+| Provider consumer leaderboard | `GET` | `/api/analytics/provider/leaderboard` |
+| Provider slowest endpoints | `GET` | `/api/analytics/provider/slowest-endpoints` |
+| Consumer subscription usage | `GET` | `/api/analytics/subscriber/usage?subId={subscriptionId}` |
+
+The Kafka-backed stream UI polls the backend stream endpoint every five seconds. It does not connect directly to Kafka from the browser. The backend must have Kafka running and its consumer persisting request events for the stream to populate. Live request counts and anomalies use backend data; revenue, detailed breakdowns, quota projections, and some charts remain explicitly marked demo estimates because the current backend does not expose matching endpoints.
 
 ## Using the Request Playground
 

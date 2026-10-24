@@ -1,274 +1,658 @@
-import React, { useState, useEffect } from 'react';
+
+import React, { useCallback, useEffect, useState } from 'react';
 import axios from 'axios';
-import { LogIn, UserPlus, Server, Key, Activity, Layers, LogOut, Code, FileText, CreditCard, X, Eye, EyeOff, Copy, Check, Send, Clock, Braces } from 'lucide-react';
+import {
+  Activity,
+  BarChart2,
+  Check,
+  Code,
+  Copy,
+  CreditCard,
+  Eye,
+  EyeOff,
+  FileText,
+  Key,
+  Layers,
+  LogIn,
+  LogOut,
+  Pencil,
+  Plus,
+  Server,
+  Send,
+  UserPlus,
+  X,
+  Trash2,
+} from 'lucide-react';
+import { ProviderAnalytics } from './components/analytics/ProviderAnalytics';
+import { ConsumerAnalytics } from './components/analytics/ConsumerAnalytics';
 import './index.css';
 
-// Configure axios base
 const api = axios.create({
-  baseURL: 'http://localhost:8080',
+  baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080',
+  timeout: 20000,
 });
 
-// Payment and plan routes: verify these match your Spring Boot controllers.
 const PAYMENT_CREATE_ORDER_PATH = '/api/v1/payment/create-order';
 const PAYMENT_VERIFY_PATH = '/api/v1/payment/verify';
-const API_PLANS_PATH = (apiId) => `/api/v1/payment/plans/${apiId}`;
+const plansPath = (apiId) => `/api/v1/payment/plans/${apiId}`;
 
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('token');
   if (token) {
+    config.headers = config.headers || {};
     config.headers.Authorization = `Bearer ${token}`;
   }
   return config;
 });
 
-function App() {
-  const [user, setUser] = useState(null); // { userName, role, jwtToken }
-  const [authMode, setAuthMode] = useState('login'); // login | register-provider | register-consumer
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
-  const [success, setSuccess] = useState(null);
+const normalizeApi = (item) => ({
+  ...item,
+  apiId: item.apiId ?? item.id,
+  link: item.link ?? item.apiLink ?? '',
+});
 
-  // Auth Form State
+const normalizeSubscription = (item) => ({
+  ...item,
+  subId: item.subId ?? item.subscriptionId ?? item.id,
+  apiId: item.apiId ?? item.api?.apiId,
+});
+
+const getId = (sub) => sub?.subId ?? sub?.subscriptionId ?? sub?.id;
+const getPlanId = (plan) => plan?.planId ?? plan?.id;
+
+const emptyPlan = {
+  planName: '',
+  price: '0',
+  rateLimitPerMinute: '10',
+  description: '',
+};
+
+function App() {
+  const [user, setUser] = useState(null);
+  const [authMode, setAuthMode] = useState('login');
   const [userName, setUserName] = useState('');
   const [userEmail, setUserEmail] = useState('');
   const [password, setPassword] = useState('');
 
-  // Provider State
+  const [loading, setLoading] = useState(false);
+  const [paymentBusy, setPaymentBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [activeTab, setActiveTab] = useState('');
+
   const [myApis, setMyApis] = useState([]);
+  const [allApis, setAllApis] = useState([]);
+  const [subscriptions, setSubscriptions] = useState([]);
+
   const [newApiName, setNewApiName] = useState('');
   const [newApiLink, setNewApiLink] = useState('');
   const [newApiDesc, setNewApiDesc] = useState('');
 
-  // Provider plan-management state
-  const [expandedProviderApiId, setExpandedProviderApiId] = useState(null);
-  const [providerPlans, setProviderPlans] = useState({});
-  const [editingPlanId, setEditingPlanId] = useState(null);
-  const [planForm, setPlanForm] = useState({ planName: '', price: '', rateLimitPerMinute: 60, description: '' });
-  const [savingPlan, setSavingPlan] = useState(false);
+  const [selectedProviderApiId, setSelectedProviderApiId] = useState(null);
+  const [selectedConsumerSubId, setSelectedConsumerSubId] = useState(null);
 
-  // Consumer State
-  const [subscriptions, setSubscriptions] = useState([]);
-  const [allApis, setAllApis] = useState([]);
   const [plansForApi, setPlansForApi] = useState({});
   const [expandedApiId, setExpandedApiId] = useState(null);
-  const [paymentBusy, setPaymentBusy] = useState(false);
-  const [revealedKeys, setRevealedKeys] = useState({});
+
+  const [planFormApiId, setPlanFormApiId] = useState(null);
+  const [editingPlanId, setEditingPlanId] = useState(null);
+  const [planForm, setPlanForm] = useState(emptyPlan);
+  const [planSaving, setPlanSaving] = useState(false);
+
   const [subscriptionKeys, setSubscriptionKeys] = useState({});
+  const [revealedKeys, setRevealedKeys] = useState({});
   const [keyLoading, setKeyLoading] = useState({});
   const [copiedKeyId, setCopiedKeyId] = useState(null);
 
-  // Consumer request-playground state
   const [playgroundSubId, setPlaygroundSubId] = useState(null);
   const [requestMethod, setRequestMethod] = useState('GET');
-  const [requestPath, setRequestPath] = useState('/');
-  const [requestBody, setRequestBody] = useState(`{
-  "title": "My test post",
-  "body": "Hello from APIForge",
-  "userId": 1
-}`);
+  const [requestPath, setRequestPath] = useState('/posts/1');
+  const [requestBody, setRequestBody] = useState(
+    JSON.stringify(
+      { title: 'Test post', body: 'Hello from APIForge', userId: 1 },
+      null,
+      2
+    )
+  );
   const [requestLoading, setRequestLoading] = useState(false);
   const [requestResponse, setRequestResponse] = useState(null);
   const [requestDuration, setRequestDuration] = useState(null);
 
+  const clearMessages = () => {
+    setError('');
+    setSuccess('');
+  };
 
-  // Dashboard UI State
-  const [activeTab, setActiveTab] = useState('');
+  const fetchMyApis = useCallback(async () => {
+    const { data } = await api.get('/api/v1/apis/myapi');
+    setMyApis(Array.isArray(data) ? data.map(normalizeApi) : []);
+  }, []);
+
+  const fetchAllApis = useCallback(async () => {
+    const { data } = await api.get('/api/v1/subscription/all');
+    setAllApis(Array.isArray(data) ? data.map(normalizeApi) : []);
+  }, []);
+
+  const fetchSubscriptions = useCallback(async () => {
+    const { data } = await api.get('/api/v1/subscription');
+    setSubscriptions(Array.isArray(data) ? data.map(normalizeSubscription) : []);
+  }, []);
 
   useEffect(() => {
-    const saved = localStorage.getItem('user');
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      setUser(parsed);
-      setActiveTab(parsed.role === 'PROVIDER' ? 'my-apis' : 'marketplace');
+    try {
+      const savedUser = localStorage.getItem('user');
+      const savedToken = localStorage.getItem('token');
+
+      if (savedUser && savedToken) {
+        const parsed = JSON.parse(savedUser);
+        setUser(parsed);
+        setActiveTab(
+          parsed.role === 'PROVIDER' ? 'my-apis' : 'marketplace'
+        );
+      }
+    } catch {
+      localStorage.removeItem('user');
+      localStorage.removeItem('token');
     }
   }, []);
 
   useEffect(() => {
-    if (user) {
-      if (user.role === 'PROVIDER') {
-        fetchMyApis();
-      } else if (user.role === 'CONSUMER') {
-        fetchSubscriptions();
-        fetchAllApis();
-      }
+    if (!user) return;
+
+    if (user.role === 'PROVIDER') {
+      fetchMyApis().catch((err) => {
+        setError(err.response?.data?.message || 'Could not load your APIs.');
+      });
+    } else if (user.role === 'CONSUMER') {
+      Promise.all([fetchSubscriptions(), fetchAllApis()]).catch((err) => {
+        setError(
+          err.response?.data?.message || 'Could not load marketplace data.'
+        );
+      });
     }
-  }, [user]);
+  }, [user, fetchMyApis, fetchAllApis, fetchSubscriptions]);
 
-  const clearMessages = () => {
-    setError(null);
-    setSuccess(null);
-  };
-
-  const handleLogin = async (e) => {
-    e.preventDefault();
-    setLoading(true);
+  const handleLogin = async (event) => {
+    event.preventDefault();
     clearMessages();
+    setLoading(true);
+
     try {
-      const res = await api.post('/api/v1/auth/login', { userName, password });
-      setUser(res.data);
-      setActiveTab(res.data.role === 'PROVIDER' ? 'my-apis' : 'marketplace');
-      localStorage.setItem('user', JSON.stringify(res.data));
-      localStorage.setItem('token', res.data.jwtToken);
-      console.log(res.data.jwtToken)
-      setSuccess('Logged in successfully!');
+      const { data } = await api.post('/api/v1/auth/login', {
+        userName,
+        password,
+      });
+
+      if (!data?.jwtToken || !data?.role) {
+        throw new Error('Login response did not contain jwtToken and role.');
+      }
+
+      localStorage.setItem('token', data.jwtToken);
+      localStorage.setItem('user', JSON.stringify(data));
+      setUser(data);
+      setActiveTab(data.role === 'PROVIDER' ? 'my-apis' : 'marketplace');
+      setSuccess('Logged in successfully.');
     } catch (err) {
-      setError(err.response?.data?.message || 'Login failed');
+      setError(err.response?.data?.message || err.message || 'Login failed.');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleRegister = async (e, type) => {
-    e.preventDefault();
-    setLoading(true);
+  const handleRegister = async (event, role) => {
+    event.preventDefault();
     clearMessages();
+    setLoading(true);
+
     try {
-      const endpoint = type === 'PROVIDER' ? '/api/v1/auth/provider/register' : '/api/v1/auth/consumer/register';
+      const endpoint =
+        role === 'PROVIDER'
+          ? '/api/v1/auth/provider/register'
+          : '/api/v1/auth/consumer/register';
+
       await api.post(endpoint, { userName, userEmail, password });
-      setSuccess('Registration successful! Please login.');
+      setSuccess('Registration successful. Please log in.');
       setAuthMode('login');
       setPassword('');
     } catch (err) {
-      setError(err.response?.data?.message || 'Registration failed');
+      setError(err.response?.data?.message || 'Registration failed.');
     } finally {
       setLoading(false);
     }
   };
 
   const logout = () => {
-    setUser(null);
-    localStorage.removeItem('user');
     localStorage.removeItem('token');
-    setUserName('');
-    setPassword('');
+    localStorage.removeItem('user');
+    setUser(null);
     setMyApis([]);
-    setSubscriptions([]);
     setAllApis([]);
-  };
-
-  const fetchMyApis = async () => {
-    try {
-      const res = await api.get('/api/v1/apis/myapi');
-      setMyApis(res.data);
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  
-const fetchAllApis = async () => {
-  try {
-    const res = await api.get('/api/v1/subscription/all');
-
-    console.log('Status:', res.status);
-    console.log('All APIs:', res.data);
-
-    setAllApis(Array.isArray(res.data) ? res.data : []);
-  } catch (err) {
-    console.error('Failed to fetch APIs:', {
-      url: err.config?.url,
-      baseURL: err.config?.baseURL,
-      status: err.response?.status,
-      response: err.response?.data,
-      message: err.message,
-    });
-  }
-};
-
-
-  const fetchSubscriptions = async () => {
-    try {
-      const res = await api.get('/api/v1/subscription');
-
-      console.log('Subscriptions response:', res.data);
-      setSubscriptions(res.data);
-      console.log(res.data)
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const getSubscriptionId = (sub) => sub.subId ?? sub.subscriptionId ?? sub.id;
-
-  const handleToggleApiKey = async (sub) => {
-    const subscriptionId = getSubscriptionId(sub);
-    if (subscriptionId == null) {
-      setError('This subscription response does not include a subscription ID.');
-      return;
-    }
-
-    if (revealedKeys[subscriptionId]) {
-      setRevealedKeys((current) => ({ ...current, [subscriptionId]: false }));
-      return;
-    }
-
-    if (subscriptionKeys[subscriptionId]) {
-      setRevealedKeys((current) => ({ ...current, [subscriptionId]: true }));
-      return;
-    }
-
-    setKeyLoading((current) => ({ ...current, [subscriptionId]: true }));
+    setSubscriptions([]);
+    setSubscriptionKeys({});
+    setRevealedKeys({});
+    setPlansForApi({});
+    setExpandedApiId(null);
+    setPlanFormApiId(null);
+    setEditingPlanId(null);
+    setActiveTab('');
+    setPassword('');
     clearMessages();
+  };
+
+  // API registration no longer submits a rate limit.
+  const handleRegisterApi = async (event) => {
+    event.preventDefault();
+    clearMessages();
+    setLoading(true);
+
     try {
-      const res = await api.get(`/api/v1/subscription/${subscriptionId}/key`);
-      const apiKey = res.data?.apiKey;
-      if (!apiKey) throw new Error('The key endpoint did not return an apiKey.');
-      setSubscriptionKeys((current) => ({ ...current, [subscriptionId]: apiKey }));
-      setRevealedKeys((current) => ({ ...current, [subscriptionId]: true }));
+      await api.post('/api/v1/apis/register', {
+        apiName: newApiName.trim(),
+        link: newApiLink.trim(),
+        apiDescription: newApiDesc.trim(),
+      });
+
+      setSuccess('API registered successfully. You can now add plans.');
+      setNewApiName('');
+      setNewApiLink('');
+      setNewApiDesc('');
+      await fetchMyApis();
+      setActiveTab('my-apis');
     } catch (err) {
-      setError(err.response?.data?.message || err.message || 'Unable to retrieve API key.');
+      setError(err.response?.data?.message || 'Failed to register API.');
     } finally {
-      setKeyLoading((current) => ({ ...current, [subscriptionId]: false }));
+      setLoading(false);
     }
   };
 
-  const handleOpenPlayground = async (sub) => {
-    const subscriptionId = getSubscriptionId(sub);
-    if (subscriptionId == null) {
-      setError('This subscription response does not include a subscription ID.');
+  const loadPlans = async (apiItem, force = false) => {
+    const apiId = apiItem.apiId;
+
+    if (apiId == null) {
+      setError('The API response does not contain apiId.');
       return;
     }
-    setPlaygroundSubId(subscriptionId);
+
+    if (!force && expandedApiId === apiId) {
+      setExpandedApiId(null);
+      setPlanFormApiId(null);
+      setEditingPlanId(null);
+      return;
+    }
+
+    clearMessages();
+    setExpandedApiId(apiId);
+    setLoading(true);
+
+    try {
+      const { data } = await api.get(plansPath(apiId));
+      const plans = Array.isArray(data)
+        ? data
+        : data?.plans ?? data?.content ?? [];
+
+      setPlansForApi((previous) => ({ ...previous, [apiId]: plans }));
+    } catch (err) {
+      setError(
+        err.response?.data?.message || 'Could not load plans for this API.'
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const openCreatePlanForm = (apiItem) => {
+    clearMessages();
+    setExpandedApiId(apiItem.apiId);
+    setPlanFormApiId(apiItem.apiId);
+    setEditingPlanId(null);
+    setPlanForm({ ...emptyPlan });
+  };
+
+  const openEditPlanForm = (apiItem, plan) => {
+    clearMessages();
+    setExpandedApiId(apiItem.apiId);
+    setPlanFormApiId(apiItem.apiId);
+    setEditingPlanId(getPlanId(plan));
+    setPlanForm({
+      planName: plan.planName ?? plan.name ?? '',
+      price: String(plan.price ?? 0),
+      rateLimitPerMinute: String(plan.rateLimitPerMinute ?? 10),
+      description: plan.description ?? '',
+    });
+  };
+
+  const closePlanForm = () => {
+    setPlanFormApiId(null);
+    setEditingPlanId(null);
+    setPlanForm({ ...emptyPlan });
+  };
+
+  const handlePlanFormChange = (event) => {
+    const { name, value } = event.target;
+    setPlanForm((previous) => ({ ...previous, [name]: value }));
+  };
+
+  const handleSavePlan = async (event) => {
+    event.preventDefault();
+    if (planFormApiId == null) return;
+
+    clearMessages();
+
+    const price = Number(planForm.price);
+    const rateLimitPerMinute = Number(planForm.rateLimitPerMinute);
+
+    if (!planForm.planName.trim()) {
+      setError('Enter a plan name.');
+      return;
+    }
+    if (!Number.isFinite(price) || price < 0) {
+      setError('Price must be zero or greater.');
+      return;
+    }
+    if (
+      !Number.isInteger(rateLimitPerMinute) ||
+      rateLimitPerMinute < 1
+    ) {
+      setError('Rate limit must be a whole number greater than zero.');
+      return;
+    }
+
+    const payload = {
+      planName: planForm.planName.trim(),
+      price,
+      rateLimitPerMinute,
+      description: planForm.description.trim(),
+    };
+
+    setPlanSaving(true);
+
+    try {
+      if (editingPlanId != null) {
+        await api.put(
+          `/api/v1/payment/plans/${editingPlanId}`,
+          payload
+        );
+        setSuccess('Plan updated successfully.');
+      } else {
+        await api.post(
+          `/api/v1/payment/plans/${planFormApiId}`,
+          payload
+        );
+        setSuccess('Plan created successfully.');
+      }
+
+      const apiItem = myApis.find(
+        (item) => Number(item.apiId) === Number(planFormApiId)
+      );
+
+      closePlanForm();
+
+      if (apiItem) {
+        await loadPlans(apiItem, true);
+      }
+    } catch (err) {
+      setError(
+        err.response?.data?.message ||
+          err.response?.data?.error ||
+          'Could not save the plan.'
+      );
+    } finally {
+      setPlanSaving(false);
+    }
+  };
+
+  const handleDeactivatePlan = async (apiItem, plan) => {
+    const planId = getPlanId(plan);
+
+    if (planId == null) {
+      setError('The plan response does not contain planId.');
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Deactivate "${plan.planName || plan.name || 'this plan'}"? Existing subscriptions may be affected by your backend's plan rules.`
+    );
+
+    if (!confirmed) return;
+
+    clearMessages();
+    setLoading(true);
+
+    try {
+      await api.delete(`/api/v1/payment/plans/${planId}`);
+      setSuccess('Plan deactivated.');
+      await loadPlans(apiItem, true);
+    } catch (err) {
+      setError(
+        err.response?.data?.message || 'Could not deactivate this plan.'
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSubscribeFree = async (apiItem) => {
+    clearMessages();
+    setLoading(true);
+
+    try {
+      await api.post('/api/v1/subscription', { apiId: apiItem.apiId });
+      setSuccess(`Subscribed to ${apiItem.apiName}.`);
+      await fetchSubscriptions();
+    } catch (err) {
+      setError(err.response?.data?.message || 'Subscription failed.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handlePayForPlan = async (plan, apiItem) => {
+    clearMessages();
+    setPaymentBusy(true);
+
+    try {
+      const planId = getPlanId(plan);
+      if (planId == null) {
+        throw new Error('The plan response does not contain planId.');
+      }
+
+      const { data: order } = await api.post(
+        PAYMENT_CREATE_ORDER_PATH,
+        { planId }
+      );
+
+      if (
+        !order?.keyId ||
+        !order?.razorpayOrderId ||
+        !Number.isFinite(Number(order?.amount))
+      ) {
+        throw new Error('Create-order response is missing payment details.');
+      }
+
+      const loadRazorpay = () =>
+        new Promise((resolve) => {
+          if (window.Razorpay) return resolve(true);
+
+          const script = document.createElement('script');
+          script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+          script.onload = () => resolve(true);
+          script.onerror = () => resolve(false);
+          document.body.appendChild(script);
+        });
+
+      if (!(await loadRazorpay())) {
+        throw new Error('Could not load Razorpay Checkout.');
+      }
+
+      const checkout = new window.Razorpay({
+        key: order.keyId,
+        amount: Number(order.amount),
+        currency: order.currency || 'INR',
+        name: 'APIForge',
+        description: `${apiItem.apiName} — ${plan.planName || 'API plan'}`,
+        order_id: order.razorpayOrderId,
+        theme: { color: '#8b5cf6' },
+        modal: { ondismiss: () => setPaymentBusy(false) },
+        handler: async (paymentResult) => {
+          try {
+            const verification = await api.post(PAYMENT_VERIFY_PATH, {
+              razorpayOrderId:
+                paymentResult.razorpay_order_id || order.razorpayOrderId,
+              razorpayPaymentId: paymentResult.razorpay_payment_id,
+              razorpaySignature: paymentResult.razorpay_signature,
+            });
+
+            setSuccess(verification.data?.message || 'Payment verified.');
+            await fetchSubscriptions();
+            setExpandedApiId(null);
+          } catch (err) {
+            setError(
+              err.response?.data?.message || 'Payment verification failed.'
+            );
+          } finally {
+            setPaymentBusy(false);
+          }
+        },
+      });
+
+      checkout.on('payment.failed', (event) => {
+        setError(event?.error?.description || 'Payment failed.');
+        setPaymentBusy(false);
+      });
+
+      checkout.open();
+    } catch (err) {
+      setError(
+        err.response?.data?.message ||
+          err.message ||
+          'Unable to start payment.'
+      );
+      setPaymentBusy(false);
+    }
+  };
+
+  const handleToggleApiKey = async (subscription) => {
+    const subId = getId(subscription);
+
+    if (subId == null) {
+      setError('Subscription response is missing subId.');
+      return;
+    }
+
+    if (revealedKeys[subId]) {
+      setRevealedKeys((previous) => ({ ...previous, [subId]: false }));
+      return;
+    }
+
+    if (subscriptionKeys[subId]) {
+      setRevealedKeys((previous) => ({ ...previous, [subId]: true }));
+      return;
+    }
+
+    setKeyLoading((previous) => ({ ...previous, [subId]: true }));
+    clearMessages();
+
+    try {
+      const { data } = await api.get(`/api/v1/subscription/${subId}/key`);
+      if (!data?.apiKey) {
+        throw new Error('The key endpoint did not return apiKey.');
+      }
+
+      setSubscriptionKeys((previous) => ({
+        ...previous,
+        [subId]: data.apiKey,
+      }));
+      setRevealedKeys((previous) => ({ ...previous, [subId]: true }));
+    } catch (err) {
+      setError(
+        err.response?.data?.message ||
+          err.message ||
+          'Unable to retrieve API key.'
+      );
+    } finally {
+      setKeyLoading((previous) => ({ ...previous, [subId]: false }));
+    }
+  };
+
+  const handleCopyApiKey = async (subscription) => {
+    const subId = getId(subscription);
+    const key = subscriptionKeys[subId];
+
+    if (!key) {
+      setError('Reveal the API key before copying it.');
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(key);
+      setCopiedKeyId(subId);
+      window.setTimeout(() => setCopiedKeyId(null), 1500);
+    } catch {
+      setError('Could not copy the API key. Check browser clipboard permissions.');
+    }
+  };
+
+  const openPlayground = async (subscription) => {
+    const subId = getId(subscription);
+    setPlaygroundSubId(subId);
     setRequestResponse(null);
     setRequestMethod('GET');
-    setRequestPath('/');
-    clearMessages();
-    if (!subscriptionKeys[subscriptionId]) {
-      setKeyLoading((current) => ({ ...current, [subscriptionId]: true }));
+    setRequestPath('/posts/1');
+
+    if (!subscriptionKeys[subId]) {
+      setKeyLoading((previous) => ({ ...previous, [subId]: true }));
+
       try {
-        const res = await api.get(`/api/v1/subscription/${subscriptionId}/key`);
-        if (!res.data?.apiKey) throw new Error('The key endpoint did not return an apiKey.');
-        setSubscriptionKeys((current) => ({ ...current, [subscriptionId]: res.data.apiKey }));
+        const { data } = await api.get(`/api/v1/subscription/${subId}/key`);
+        if (!data?.apiKey) {
+          throw new Error('The key endpoint did not return apiKey.');
+        }
+
+        setSubscriptionKeys((previous) => ({
+          ...previous,
+          [subId]: data.apiKey,
+        }));
       } catch (err) {
-        setError(err.response?.data?.message || err.message || 'Unable to retrieve API key for the playground.');
+        setError(
+          err.response?.data?.message ||
+            err.message ||
+            'Could not load API key.'
+        );
       } finally {
-        setKeyLoading((current) => ({ ...current, [subscriptionId]: false }));
+        setKeyLoading((previous) => ({ ...previous, [subId]: false }));
       }
     }
   };
 
-  const handleSendGatewayRequest = async (e) => {
-    e.preventDefault();
-    const sub = subscriptions.find((item) => getSubscriptionId(item) === playgroundSubId);
-    if (!sub) {
+  const sendGatewayRequest = async (event) => {
+    event.preventDefault();
+    const subscription = subscriptions.find(
+      (item) => getId(item) === playgroundSubId
+    );
+
+    if (!subscription || subscription.status !== 'ACTIVE') {
       setError('Select an active subscription before sending a request.');
       return;
     }
-    if (sub.status !== 'ACTIVE') {
-      setError('This subscription is not active.');
-      return;
-    }
+
     const apiKey = subscriptionKeys[playgroundSubId];
     if (!apiKey) {
-      setError('The API key is not available yet. Close and reopen Try API, then try again.');
+      setError('The API key is not available. Close and reopen the playground.');
       return;
     }
+
     const path = requestPath.trim();
     if (!path.startsWith('/')) {
       setError('Endpoint path must start with /.');
       return;
     }
-    const config = { method: requestMethod, url: `/proxy${path}`, headers: { 'api-key': apiKey } };
+
+    const config = {
+      method: requestMethod,
+      url: `/proxy${path}`,
+      headers: { 'api-key': apiKey },
+    };
+
     if (['POST', 'PUT', 'PATCH'].includes(requestMethod)) {
       try {
         config.data = requestBody.trim() ? JSON.parse(requestBody) : {};
@@ -278,242 +662,29 @@ const fetchAllApis = async () => {
         return;
       }
     }
+
     setRequestLoading(true);
     setRequestResponse(null);
     setRequestDuration(null);
     clearMessages();
-    const startedAt = performance.now();
+    const started = performance.now();
+
     try {
       const response = await api.request(config);
-      setRequestResponse({ status: response.status, statusText: response.statusText, data: response.data, headers: response.headers });
+      setRequestResponse({
+        status: response.status,
+        statusText: response.statusText,
+        data: response.data,
+      });
     } catch (err) {
-      if (err.response) {
-        setRequestResponse({ status: err.response.status, statusText: err.response.statusText, data: err.response.data, headers: err.response.headers });
-      } else {
-        setRequestResponse({ status: 'NETWORK ERROR', statusText: err.message, data: { message: 'Could not reach the API Gateway. Check that the backend is running and CORS permits this request.' }, headers: {} });
-      }
+      setRequestResponse({
+        status: err.response?.status ?? 'NETWORK ERROR',
+        statusText: err.response?.statusText || err.message,
+        data: err.response?.data ?? { message: 'Could not reach the gateway.' },
+      });
     } finally {
-      setRequestDuration(Math.round(performance.now() - startedAt));
+      setRequestDuration(Math.round(performance.now() - started));
       setRequestLoading(false);
-    }
-  };
-
-  const handleCopyApiKey = async (sub) => {
-    const subscriptionId = getSubscriptionId(sub);
-    let apiKey = subscriptionKeys[subscriptionId];
-    if (!apiKey) {
-      setError('Reveal the API key before copying it.');
-      return;
-    }
-    try {
-      await navigator.clipboard.writeText(apiKey);
-      setCopiedKeyId(subscriptionId);
-      window.setTimeout(() => setCopiedKeyId((current) => current === subscriptionId ? null : current), 1800);
-    } catch {
-      setError('Clipboard access failed. Use a secure context (HTTPS or localhost) and try again.');
-    }
-  };
-
-  const handleRegisterApi = async (e) => {
-    e.preventDefault();
-    setLoading(true);
-    clearMessages();
-    try {
-      await api.post('/api/v1/apis/register', {
-        apiName: newApiName,
-        link: newApiLink,
-        apiDescription: newApiDesc
-      });
-      setSuccess('API Registered Successfully!');
-      setNewApiName('');
-      setNewApiLink('');
-      setNewApiDesc('');
-      fetchMyApis();
-    } catch (err) {
-      setError(err.response?.data?.message || 'Failed to register API');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleManagePlans = async (apiItem) => {
-    clearMessages();
-    const apiId = apiItem.apiId ?? apiItem.id;
-    if (apiId == null) {
-      setError('API ID is missing from the API response.');
-      return;
-    }
-    if (expandedProviderApiId === apiId) {
-      setExpandedProviderApiId(null);
-      setEditingPlanId(null);
-      return;
-    }
-    setExpandedProviderApiId(apiId);
-    setEditingPlanId(null);
-    try {
-      const res = await api.get(API_PLANS_PATH(apiId));
-      const plans = Array.isArray(res.data) ? res.data : (res.data?.content || res.data?.plans || []);
-      setProviderPlans(previous => ({ ...previous, [apiId]: plans }));
-    } catch (err) {
-      setError(err.response?.data?.message || 'Failed to load plans.');
-    }
-  };
-
-  const handleEditPlan = (plan) => {
-    setEditingPlanId(plan.planId ?? plan.id);
-    setPlanForm({
-      planName: plan.planName ?? '',
-      price: String(plan.price ?? 0),
-      rateLimitPerMinute: String(plan.rateLimitPerMinute ?? 60),
-      description: plan.description ?? ''
-    });
-    clearMessages();
-  };
-
-  const handleSavePlan = async (e, apiItem) => {
-    e.preventDefault();
-    clearMessages();
-    const apiId = apiItem.apiId ?? apiItem.id;
-    const payload = {
-      planName: planForm.planName.trim(),
-      price: Number(planForm.price),
-      rateLimitPerMinute: Number(planForm.rateLimitPerMinute),
-      description: planForm.description.trim()
-    };
-    if (!payload.planName || !Number.isFinite(payload.price) || payload.price < 0 ||
-        !Number.isInteger(payload.rateLimitPerMinute) || payload.rateLimitPerMinute < 1) {
-      setError('Enter a valid plan name, non-negative price, and rate limit of at least 1.');
-      return;
-    }
-    setSavingPlan(true);
-    try {
-      if (editingPlanId != null) {
-        await api.put(`/api/v1/payment/plans/${editingPlanId}`, payload);
-        setSuccess('Plan updated successfully.');
-      } else {
-        await api.post(`/api/v1/payment/plans/${apiId}`, payload);
-        setSuccess('Plan created successfully.');
-      }
-      const res = await api.get(API_PLANS_PATH(apiId));
-      const plans = Array.isArray(res.data) ? res.data : (res.data?.content || res.data?.plans || []);
-      setProviderPlans(previous => ({ ...previous, [apiId]: plans }));
-      setPlansForApi(previous => ({ ...previous, [apiId]: plans }));
-      setEditingPlanId(null);
-      setPlanForm({ planName: '', price: '', rateLimitPerMinute: 60, description: '' });
-    } catch (err) {
-      setError(err.response?.data?.message || err.message || 'Failed to save plan.');
-    } finally {
-      setSavingPlan(false);
-    }
-  };
-
-  const handleSubscribeApi = async (apiName) => {
-    setLoading(true);
-    clearMessages();
-    try {
-      await api.post('/api/v1/subscription', {
-        userName: user.userName,
-        apiName: apiName
-      });
-      setSuccess(`Subscribed to ${apiName} successfully!`);
-      fetchSubscriptions();
-    } catch (err) {
-      setError(err.response?.data?.message || 'Failed to subscribe');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-
-  const handleViewPlans = async (apiItem) => {
-    clearMessages();
-    const apiId = apiItem.apiId ?? apiItem.id;
-    if (apiId == null) {
-      setError('This API response does not include apiId. The plan list cannot be loaded until the backend returns the API ID.');
-      return;
-    }
-    if (expandedApiId === apiId) {
-      setExpandedApiId(null);
-      return;
-    }
-    setExpandedApiId(apiId);
-    if (plansForApi[apiId]) return;
-
-    setLoading(true);
-    try {
-      const res = await api.get(API_PLANS_PATH(apiId));
-      const plans = Array.isArray(res.data) ? res.data : (res.data?.content || res.data?.plans || []);
-      setPlansForApi(previous => ({ ...previous, [apiId]: plans }));
-    } catch (err) {
-      setError(err.response?.data?.message || 'Could not load plans. Check API_PLANS_PATH against your backend controller.');
-      setPlansForApi(previous => ({ ...previous, [apiId]: [] }));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handlePayForPlan = async (plan, apiItem) => {
-    clearMessages();
-    const planId = plan.planId ?? plan.id;
-    if (planId == null) {
-      setError('The plan response does not contain planId.');
-      return;
-    }
-
-    setPaymentBusy(true);
-    try {
-      const orderRes = await api.post(PAYMENT_CREATE_ORDER_PATH, { planId });
-      const order = orderRes.data;
-      if (!order?.keyId || !order?.razorpayOrderId || !Number.isFinite(Number(order?.amount))) {
-        throw new Error('Create-order response is missing keyId, razorpayOrderId or amount.');
-      }
-
-      const loadRazorpay = () => new Promise((resolve) => {
-        if (window.Razorpay) return resolve(true);
-        const script = document.createElement('script');
-        script.src = 'https://checkout.razorpay.com/v1/checkout.js';
-        script.onload = () => resolve(true);
-        script.onerror = () => resolve(false);
-        document.body.appendChild(script);
-      });
-      if (!(await loadRazorpay())) throw new Error('Could not load Razorpay Checkout. Check your internet connection.');
-
-      const checkout = new window.Razorpay({
-        key: order.keyId,
-        amount: Number(order.amount),
-        currency: order.currency || 'INR',
-        name: 'APIForge',
-        description: `${order.apiName || apiItem.apiName} — ${order.planName || plan.planName || plan.name || 'API plan'}`,
-        order_id: order.razorpayOrderId,
-        theme: { color: '#8b5cf6' },
-        modal: {
-          ondismiss: () => setPaymentBusy(false),
-        },
-        handler: async (paymentResult) => {
-          try {
-            const verification = await api.post(PAYMENT_VERIFY_PATH, {
-              razorpayOrderId: paymentResult.razorpay_order_id || order.razorpayOrderId,
-              razorpayPaymentId: paymentResult.razorpay_payment_id,
-              razorpaySignature: paymentResult.razorpay_signature,
-            });
-            setSuccess(verification.data?.message || 'Payment verified. Refreshing subscriptions…');
-            await fetchSubscriptions();
-            setExpandedApiId(null);
-          } catch (err) {
-            setError(`Checkout completed, but backend verification failed: ${err.response?.data?.message || err.message}. Check subscription status before retrying.`);
-          } finally {
-            setPaymentBusy(false);
-          }
-        },
-      });
-      checkout.on('payment.failed', (event) => {
-        setError(event?.error?.description || 'Payment failed. Please try again.');
-        setPaymentBusy(false);
-      });
-      checkout.open();
-    } catch (err) {
-      setError(err.response?.data?.message || err.message || 'Unable to start payment.');
-      setPaymentBusy(false);
     }
   };
 
@@ -521,18 +692,44 @@ const fetchAllApis = async () => {
     return (
       <div className="app-container">
         <div className="auth-container glass-panel">
-          <div style={{ textAlign: 'center', marginBottom: '2.5rem' }}>
+          <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
             <div className="logo-container" style={{ justifyContent: 'center' }}>
               <Activity size={36} color="#e879f9" />
-              <span style={{ fontSize: '2rem' }}>ApiGateway</span>
+              <span style={{ fontSize: '2rem' }}>APIForge</span>
             </div>
-            <p style={{ marginTop: '0.75rem', color: 'var(--text-secondary)', fontSize: '1.1rem' }}>Centralized API Management Platform</p>
+            <p style={{ color: 'var(--text-secondary)' }}>
+              Centralized API Management Platform
+            </p>
           </div>
 
           <div className="tabs" style={{ justifyContent: 'center' }}>
-            <button className={`tab ${authMode === 'login' ? 'active' : ''}`} onClick={() => { setAuthMode('login'); clearMessages(); }}>Login</button>
-            <button className={`tab ${authMode === 'register-provider' ? 'active' : ''}`} onClick={() => { setAuthMode('register-provider'); clearMessages(); }}>Provider</button>
-            <button className={`tab ${authMode === 'register-consumer' ? 'active' : ''}`} onClick={() => { setAuthMode('register-consumer'); clearMessages(); }}>Consumer</button>
+            <button
+              className={`tab ${authMode === 'login' ? 'active' : ''}`}
+              onClick={() => {
+                setAuthMode('login');
+                clearMessages();
+              }}
+            >
+              Login
+            </button>
+            <button
+              className={`tab ${authMode === 'register-provider' ? 'active' : ''}`}
+              onClick={() => {
+                setAuthMode('register-provider');
+                clearMessages();
+              }}
+            >
+              Provider
+            </button>
+            <button
+              className={`tab ${authMode === 'register-consumer' ? 'active' : ''}`}
+              onClick={() => {
+                setAuthMode('register-consumer');
+                clearMessages();
+              }}
+            >
+              Consumer
+            </button>
           </div>
 
           {error && <div className="alert alert-error">{error}</div>}
@@ -542,32 +739,78 @@ const fetchAllApis = async () => {
             <form onSubmit={handleLogin}>
               <div className="form-group">
                 <label>Username</label>
-                <input type="text" className="form-input" value={userName} onChange={e => setUserName(e.target.value)} required placeholder="Enter username" />
+                <input
+                  className="form-input"
+                  value={userName}
+                  onChange={(e) => setUserName(e.target.value)}
+                  required
+                />
               </div>
               <div className="form-group">
                 <label>Password</label>
-                <input type="password" className="form-input" value={password} onChange={e => setPassword(e.target.value)} required placeholder="Enter password" />
+                <input
+                  className="form-input"
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                />
               </div>
-              <button type="submit" className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', padding: '0.85rem' }} disabled={loading}>
-                <LogIn size={20} /> {loading ? 'Logging in...' : 'Sign In'}
+              <button
+                className="btn btn-primary"
+                type="submit"
+                disabled={loading}
+                style={{ width: '100%', justifyContent: 'center' }}
+              >
+                <LogIn size={18} /> {loading ? 'Logging in…' : 'Sign In'}
               </button>
             </form>
           ) : (
-            <form onSubmit={e => handleRegister(e, authMode === 'register-provider' ? 'PROVIDER' : 'CONSUMER')}>
+            <form
+              onSubmit={(event) =>
+                handleRegister(
+                  event,
+                  authMode === 'register-provider' ? 'PROVIDER' : 'CONSUMER'
+                )
+              }
+            >
               <div className="form-group">
                 <label>Username</label>
-                <input type="text" className="form-input" value={userName} onChange={e => setUserName(e.target.value)} required placeholder="Choose a username" />
+                <input
+                  className="form-input"
+                  value={userName}
+                  onChange={(e) => setUserName(e.target.value)}
+                  required
+                />
               </div>
               <div className="form-group">
-                <label>Email Address</label>
-                <input type="email" className="form-input" value={userEmail} onChange={e => setUserEmail(e.target.value)} required placeholder="name@company.com" />
+                <label>Email address</label>
+                <input
+                  className="form-input"
+                  type="email"
+                  value={userEmail}
+                  onChange={(e) => setUserEmail(e.target.value)}
+                  required
+                />
               </div>
               <div className="form-group">
-                <label>Password (min 8 chars)</label>
-                <input type="password" className="form-input" value={password} onChange={e => setPassword(e.target.value)} minLength={8} required placeholder="Create a strong password" />
+                <label>Password</label>
+                <input
+                  className="form-input"
+                  type="password"
+                  minLength={8}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                />
               </div>
-              <button type="submit" className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', padding: '0.85rem' }} disabled={loading}>
-                <UserPlus size={20} /> {loading ? 'Registering...' : `Register as ${authMode === 'register-provider' ? 'Provider' : 'Consumer'}`}
+              <button
+                className="btn btn-primary"
+                type="submit"
+                disabled={loading}
+                style={{ width: '100%', justifyContent: 'center' }}
+              >
+                <UserPlus size={18} /> {loading ? 'Registering…' : 'Create account'}
               </button>
             </form>
           )}
@@ -580,46 +823,70 @@ const fetchAllApis = async () => {
     <div className="dashboard-layout">
       <aside className="sidebar">
         <div className="logo-container" style={{ marginBottom: '2rem' }}>
-          <Activity size={32} color="#e879f9" />
-          <span style={{ fontSize: '1.5rem' }}>ApiGateway</span>
+          <Activity size={30} color="#e879f9" />
+          <span style={{ fontSize: '1.5rem' }}>APIForge</span>
         </div>
 
-        <div style={{ padding: '1.25rem', background: 'rgba(0,0,0,0.2)', borderRadius: '12px', border: '1px solid var(--border-color)', marginBottom: '1rem' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            <div style={{ width: '40px', height: '40px', borderRadius: '50%', background: 'linear-gradient(135deg, #a78bfa, #e879f9)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', fontSize: '1.2rem' }}>
-              {user.userName.charAt(0).toUpperCase()}
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column' }}>
-              <span style={{ fontWeight: '600', fontSize: '1.1rem' }}>{user.userName}</span>
-              <span style={{ fontSize: '0.8rem', color: 'var(--primary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{user.role}</span>
-            </div>
+        <div
+          style={{
+            padding: '1rem',
+            border: '1px solid var(--border-color)',
+            borderRadius: 12,
+            marginBottom: '1rem',
+          }}
+        >
+          <strong>{user.userName}</strong>
+          <div
+            style={{
+              color: 'var(--primary)',
+              fontSize: '0.8rem',
+              marginTop: '0.25rem',
+            }}
+          >
+            {user.role}
           </div>
         </div>
 
         <div className="sidebar-menu">
           {user.role === 'PROVIDER' ? (
             <>
-              <button className={`menu-item ${activeTab === 'my-apis' ? 'active' : ''}`} onClick={() => { setActiveTab('my-apis'); clearMessages(); }}>
-                <Layers size={20} /> My APIs
+              <button
+                className={`menu-item ${activeTab === 'my-apis' ? 'active' : ''}`}
+                onClick={() => setActiveTab('my-apis')}
+              >
+                <Layers size={18} /> My APIs
               </button>
-              <button className={`menu-item ${activeTab === 'register-api' ? 'active' : ''}`} onClick={() => { setActiveTab('register-api'); clearMessages(); }}>
-                <Server size={20} /> Register New API
+              <button
+                className={`menu-item ${activeTab === 'register-api' ? 'active' : ''}`}
+                onClick={() => setActiveTab('register-api')}
+              >
+                <Server size={18} /> Register API
               </button>
             </>
           ) : (
             <>
-              <button className={`menu-item ${activeTab === 'marketplace' ? 'active' : ''}`} onClick={() => { setActiveTab('marketplace'); clearMessages(); }}>
-                <Server size={20} /> API Marketplace
+              <button
+                className={`menu-item ${activeTab === 'marketplace' ? 'active' : ''}`}
+                onClick={() => setActiveTab('marketplace')}
+              >
+                <Server size={18} /> API Marketplace
               </button>
-              <button className={`menu-item ${activeTab === 'my-subscriptions' ? 'active' : ''}`} onClick={() => { setActiveTab('my-subscriptions'); clearMessages(); }}>
-                <FileText size={20} /> My Subscriptions
+              <button
+                className={`menu-item ${activeTab === 'my-subscriptions' ? 'active' : ''}`}
+                onClick={() => setActiveTab('my-subscriptions')}
+              >
+                <FileText size={18} /> My Subscriptions
               </button>
             </>
           )}
         </div>
 
-        <button className="menu-item" onClick={logout} style={{ marginTop: 'auto', color: 'var(--danger)' }}>
-          <LogOut size={20} /> Logout
+        <button
+          className="menu-item"
+          onClick={logout}
+          style={{ marginTop: 'auto', color: 'var(--danger)' }}
+        >
+          <LogOut size={18} /> Logout
         </button>
       </aside>
 
@@ -629,259 +896,520 @@ const fetchAllApis = async () => {
 
         {user.role === 'PROVIDER' && activeTab === 'register-api' && (
           <div className="glass-panel animation-fade-in">
-            <h2 style={{ marginBottom: '2rem', display: 'flex', alignItems: 'center', gap: '0.75rem' }}><Server size={28} color="var(--primary)" /> Register New API</h2>
-            <form onSubmit={handleRegisterApi} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
-              <div className="form-group" style={{ marginBottom: 0 }}>
-                <label>API Name</label>
-                <input type="text" className="form-input" value={newApiName} onChange={e => setNewApiName(e.target.value)} required placeholder="e.g. WeatherService" />
+            <h2>Register New API</h2>
+            <p>Register your API first, then configure its rate limits in plans.</p>
+
+            <form
+              onSubmit={handleRegisterApi}
+              style={{ display: 'grid', gap: '1rem', maxWidth: 760 }}
+            >
+              <div className="form-group">
+                <label>API name</label>
+                <input
+                  className="form-input"
+                  value={newApiName}
+                  onChange={(e) => setNewApiName(e.target.value)}
+                  required
+                />
               </div>
-              <div className="form-group" style={{ marginBottom: 0 }}>
-                <label>Upstream URL</label>
-                <input type="url" className="form-input" value={newApiLink} onChange={e => setNewApiLink(e.target.value)} required placeholder="https://api.weather.com" />
+              <div className="form-group">
+                <label>Base URL</label>
+                <input
+                  className="form-input"
+                  type="url"
+                  value={newApiLink}
+                  onChange={(e) => setNewApiLink(e.target.value)}
+                  placeholder="https://jsonplaceholder.typicode.com"
+                  required
+                />
               </div>
-              <div className="form-group" style={{ gridColumn: '1 / -1', marginBottom: 0 }}>
+              <div className="form-group">
                 <label>Description</label>
-                <textarea className="form-input" value={newApiDesc} onChange={e => setNewApiDesc(e.target.value)} rows={3} required placeholder="What does this API do?"></textarea>
+                <textarea
+                  className="form-input"
+                  value={newApiDesc}
+                  onChange={(e) => setNewApiDesc(e.target.value)}
+                  rows={3}
+                  required
+                />
               </div>
-              <div style={{ gridColumn: '1 / -1', display: 'flex', justifyContent: 'flex-end', marginTop: '0.5rem' }}>
-                <button type="submit" className="btn btn-primary" disabled={loading} style={{ padding: '0.75rem 1.5rem' }}>
-                  <Code size={20} /> Deploy API to Gateway
-                </button>
-              </div>
+              <button className="btn btn-primary" type="submit" disabled={loading}>
+                <Code size={18} /> {loading ? 'Registering…' : 'Register API'}
+              </button>
             </form>
           </div>
         )}
 
         {user.role === 'PROVIDER' && activeTab === 'my-apis' && (
-          <div className="animation-fade-in">
-            <h2 style={{ marginBottom: '1.5rem', display: 'flex', alignItems: 'center', gap: '0.75rem' }}><Layers size={28} color="var(--primary)" /> My APIs</h2>
+          <section className="animation-fade-in">
+            <h2>My APIs</h2>
+
             <div className="grid">
               {myApis.length === 0 ? (
-                <div className="glass-panel" style={{ gridColumn: '1 / -1', textAlign: 'center', padding: '4rem 2rem' }}>
-                  <Server size={48} color="var(--text-secondary)" style={{ marginBottom: '1rem', opacity: 0.5 }} />
-                  <h3 style={{ color: 'var(--text-secondary)' }}>No APIs registered yet.</h3>
-                  <p style={{ color: 'var(--text-secondary)' }}>Register your first API to get started.</p>
+                <div className="glass-panel">
+                  No APIs registered yet. Use Register API to add your first API.
                 </div>
-              ) : myApis.map((api, idx) => {
-                const providerApiId = api.apiId ?? api.id;
-                const currentPlans = providerPlans[providerApiId] || [];
-                return (
-                  <React.Fragment key={providerApiId ?? idx}>
-                    <div className="card">
-                      <h3><Activity size={20} color="var(--primary)" /> {api.apiName}</h3>
-                      <p>{api.apiDescription}</p>
-                      <div style={{ background: 'rgba(0,0,0,0.3)', padding: '0.75rem', borderRadius: '8px', marginBottom: '1rem', border: '1px solid var(--border-color)' }}>
-                        <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>UPSTREAM ENDPOINT</div>
-                        <div style={{ wordBreak: 'break-all', fontSize: '0.9rem', fontFamily: 'var(--mono)' }}>{api.link}</div>
-                      </div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-                        <span className={`badge ${api.status === 'ACTIVE' ? 'badge-success' : 'badge-primary'}`}>{api.status}</span>
-                        <button type="button" className="btn btn-primary" onClick={() => handleManagePlans(api)}>
-                          <CreditCard size={16} /> {expandedProviderApiId === providerApiId ? 'Hide Plans' : 'Manage Plans'}
-                        </button>
-                      </div>
+              ) : (
+                myApis.map((apiItem) => (
+                  <article className="card" key={apiItem.apiId}>
+                    <h3>
+                      <Activity size={18} /> {apiItem.apiName}
+                    </h3>
+                    <p>{apiItem.apiDescription}</p>
+                    <p
+                      style={{
+                        overflowWrap: 'anywhere',
+                        color: 'var(--text-secondary)',
+                      }}
+                    >
+                      {apiItem.link || 'No base URL returned'}
+                    </p>
+
+                    <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                      <button
+                        className="btn btn-primary"
+                        onClick={() => {
+                          setSelectedProviderApiId(apiItem.apiId);
+                          setActiveTab('provider-api-analytics');
+                        }}
+                      >
+                        <BarChart2 size={16} /> Analytics
+                      </button>
+
+                      <button
+                        className="btn"
+                        disabled={loading}
+                        onClick={() => loadPlans(apiItem)}
+                      >
+                        <CreditCard size={16} />
+                        {expandedApiId === apiItem.apiId ? 'Hide plans' : 'Manage Plans'}
+                      </button>
+
+                      <button
+                        className="btn"
+                        onClick={() => openCreatePlanForm(apiItem)}
+                      >
+                        <Plus size={16} /> Add Plan
+                      </button>
                     </div>
-                    {expandedProviderApiId === providerApiId && (
-                      <div className="plans-panel" style={{ gridColumn: '1 / -1' }}>
-                        <div className="plans-panel-heading">
-                          <strong>Manage Plans — {api.apiName}</strong>
-                          <button type="button" className="plans-close" onClick={() => { setExpandedProviderApiId(null); setEditingPlanId(null); }} aria-label="Close plan management"><X size={16} /></button>
-                        </div>
-                        <form onSubmit={(e) => handleSavePlan(e, api)} style={{ display: 'grid', gap: '1rem', margin: '1rem 0' }}>
-                          <h4>{editingPlanId != null ? 'Edit Plan' : 'Create New Plan'}</h4>
-                          <div className="form-group">
-                            <label>Plan Name</label>
-                            <input className="form-input" value={planForm.planName} onChange={(e) => setPlanForm({ ...planForm, planName: e.target.value })} required placeholder="e.g. Basic" />
-                          </div>
-                          <div className="form-group">
-                            <label>Price (INR)</label>
-                            <input className="form-input" type="number" min="0" step="0.01" value={planForm.price} onChange={(e) => setPlanForm({ ...planForm, price: e.target.value })} required />
-                          </div>
-                          <div className="form-group">
-                            <label>Rate Limit Per Minute</label>
-                            <input className="form-input" type="number" min="1" step="1" value={planForm.rateLimitPerMinute} onChange={(e) => setPlanForm({ ...planForm, rateLimitPerMinute: e.target.value })} required />
-                          </div>
-                          <div className="form-group">
-                            <label>Description</label>
-                            <textarea className="form-input" rows={2} value={planForm.description} onChange={(e) => setPlanForm({ ...planForm, description: e.target.value })} placeholder="Describe the plan" />
-                          </div>
-                          <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
-                            <button type="submit" className="btn btn-primary" disabled={savingPlan}>{savingPlan ? 'Saving...' : editingPlanId != null ? 'Save Changes' : 'Create Plan'}</button>
-                            {editingPlanId != null && <button type="button" className="btn" onClick={() => { setEditingPlanId(null); setPlanForm({ planName: '', price: '', rateLimitPerMinute: 60, description: '' }); }}>Cancel Edit</button>}
-                          </div>
-                        </form>
-                        <div className="plans-panel-heading"><strong>Existing Plans</strong></div>
-                        {currentPlans.length === 0 ? (
-                          <p className="plans-empty">No plans found for this API yet.</p>
-                        ) : currentPlans.map((plan) => (
-                          <div className="plan-row" key={plan.planId ?? plan.id}>
-                            <div>
-                              <strong>{plan.planName || plan.name || 'Plan'}</strong>
-                              <div className="plan-description">{plan.description || plan.planDescription || 'No description'}</div>
-                              <div className="plan-price">₹{Number(plan.price ?? 0).toFixed(2)}</div>
-                              <div className="plan-description">{plan.rateLimitPerMinute ?? '—'} requests/minute</div>
+
+                    {expandedApiId === apiItem.apiId && (
+                      <div className="plans-panel" style={{ marginTop: '1rem' }}>
+                        <h4>Plans — {apiItem.apiName}</h4>
+
+                        {(plansForApi[apiItem.apiId] || []).length === 0 ? (
+                          <p>No plans found. Add a plan to let consumers subscribe.</p>
+                        ) : (
+                          (plansForApi[apiItem.apiId] || []).map((plan) => (
+                            <div
+                              key={getPlanId(plan)}
+                              style={{
+                                borderTop: '1px solid var(--border-color)',
+                                padding: '0.85rem 0',
+                              }}
+                            >
+                              <strong>{plan.planName || plan.name}</strong>
+                              <p>{plan.description || 'No description provided.'}</p>
+                              <p>
+                                Price: ₹{Number(plan.price ?? 0).toFixed(2)}
+                              </p>
+                              <p>
+                                Rate limit: {plan.rateLimitPerMinute} requests/minute
+                              </p>
+                              {plan.status && <p>Status: {plan.status}</p>}
+
+                              <div
+                                style={{
+                                  display: 'flex',
+                                  gap: '0.5rem',
+                                  flexWrap: 'wrap',
+                                }}
+                              >
+                                <button
+                                  className="btn"
+                                  onClick={() => openEditPlanForm(apiItem, plan)}
+                                >
+                                  <Pencil size={16} /> Edit Plan
+                                </button>
+                                <button
+                                  className="btn"
+                                  disabled={loading}
+                                  onClick={() => handleDeactivatePlan(apiItem, plan)}
+                                >
+                                  <Trash2 size={16} /> Deactivate
+                                </button>
+                              </div>
                             </div>
-                            <button type="button" className="btn" onClick={() => handleEditPlan(plan)}>Edit Plan</button>
-                          </div>
-                        ))}
+                          ))
+                        )}
+
+                        {planFormApiId === apiItem.apiId && (
+                          <form
+                            onSubmit={handleSavePlan}
+                            className="glass-panel"
+                            style={{
+                              marginTop: '1rem',
+                              display: 'grid',
+                              gap: '0.85rem',
+                            }}
+                          >
+                            <div
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                gap: '1rem',
+                              }}
+                            >
+                              <h4 style={{ margin: 0 }}>
+                                {editingPlanId != null ? 'Edit Plan' : 'Add New Plan'}
+                              </h4>
+                              <button
+                                type="button"
+                                className="btn"
+                                onClick={closePlanForm}
+                              >
+                                <X size={16} /> Close
+                              </button>
+                            </div>
+
+                            <div className="form-group">
+                              <label>Plan name</label>
+                              <input
+                                className="form-input"
+                                name="planName"
+                                value={planForm.planName}
+                                onChange={handlePlanFormChange}
+                                placeholder="Free, Pro, Enterprise"
+                                required
+                              />
+                            </div>
+
+                            <div className="form-group">
+                              <label>Price (₹)</label>
+                              <input
+                                className="form-input"
+                                name="price"
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                value={planForm.price}
+                                onChange={handlePlanFormChange}
+                                required
+                              />
+                            </div>
+
+                            <div className="form-group">
+                              <label>Rate limit (requests per minute)</label>
+                              <input
+                                className="form-input"
+                                name="rateLimitPerMinute"
+                                type="number"
+                                min="1"
+                                step="1"
+                                value={planForm.rateLimitPerMinute}
+                                onChange={handlePlanFormChange}
+                                required
+                              />
+                            </div>
+
+                            <div className="form-group">
+                              <label>Description</label>
+                              <textarea
+                                className="form-input"
+                                name="description"
+                                value={planForm.description}
+                                onChange={handlePlanFormChange}
+                                rows={3}
+                              />
+                            </div>
+
+                            <button
+                              className="btn btn-primary"
+                              type="submit"
+                              disabled={planSaving}
+                            >
+                              <Check size={16} />
+                              {planSaving
+                                ? 'Saving…'
+                                : editingPlanId != null
+                                  ? 'Save Changes'
+                                  : 'Create Plan'}
+                            </button>
+                          </form>
+                        )}
                       </div>
                     )}
-                  </React.Fragment>
-                );
-              })}
+                  </article>
+                ))
+              )}
             </div>
-          </div>
+          </section>
         )}
 
         {user.role === 'CONSUMER' && activeTab === 'marketplace' && (
-          <div className="animation-fade-in">
-            <h2 style={{ marginBottom: '1.5rem', display: 'flex', alignItems: 'center', gap: '0.75rem' }}><Server size={28} color="var(--primary)" /> Explore APIs</h2>
+          <section className="animation-fade-in">
+            <h2>API Marketplace</h2>
             <div className="grid">
               {allApis.length === 0 ? (
-                <div className="glass-panel" style={{ gridColumn: '1 / -1', textAlign: 'center', padding: '4rem 2rem' }}>
-                  <Activity size={48} color="var(--text-secondary)" style={{ marginBottom: '1rem', opacity: 0.5 }} />
-                  <h3 style={{ color: 'var(--text-secondary)' }}>No APIs available yet.</h3>
-                  <p style={{ color: 'var(--text-secondary)' }}>Check back later when providers deploy new APIs.</p>
-                </div>
-              ) : allApis.map((apiItem, idx) => {
-                const isSubscribed = subscriptions.some(s => s.apiName === apiItem.apiName);
-                return (
-                  <div key={idx} className="card" style={{ display: 'flex', flexDirection: 'column' }}>
-                    <h3><Activity size={20} color="var(--primary)" /> {apiItem.apiName}</h3>
-                    <p style={{ flex: 1 }}>{apiItem.apiDescription}</p>
-                    <div style={{ marginTop: 'auto', display: 'flex', justifyContent: 'flex-end', gap: '0.65rem', flexWrap: 'wrap', paddingTop: '1rem', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
-                      {isSubscribed ? (
-                        <span className="badge badge-success">Subscribed</span>
-                      ) : (
-                        <>
-                          <button onClick={() => handleSubscribeApi(apiItem.apiName)} className="btn" disabled={loading || paymentBusy} style={{ padding: '0.5rem 1rem', fontSize: '0.9rem' }}>
-                            <Key size={16} /> Free Subscribe
-                          </button>
-                          <button onClick={() => handleViewPlans(apiItem)} className="btn btn-primary" disabled={loading || paymentBusy} style={{ padding: '0.5rem 1rem', fontSize: '0.9rem' }}>
-                            <CreditCard size={16} /> View Paid Plans
-                          </button>
-                        </>
-                      )}
-                    </div>
-                    {expandedApiId === (apiItem.apiId ?? apiItem.id) && (
-                      <div className="plans-panel">
-                        <div className="plans-panel-heading">
-                          <strong>Available plans</strong>
-                          <button className="plans-close" onClick={() => setExpandedApiId(null)} aria-label="Close plans"><X size={16} /></button>
-                        </div>
-                        {(plansForApi[apiItem.apiId ?? apiItem.id] || []).length === 0 ? (
-                          <p className="plans-empty">No plans returned, or the plan endpoint could not be loaded.</p>
-                        ) : (plansForApi[apiItem.apiId ?? apiItem.id] || []).map((plan) => (
-                          <div className="plan-row" key={plan.planId ?? plan.id}>
-                            <div>
-                              <strong>{plan.planName || plan.name || 'Plan'}</strong>
-                              <div className="plan-description">{plan.description || plan.planDescription || 'API access plan'}</div>
-                              <div className="plan-price">₹{Number(plan.price ?? 0).toFixed(2)}</div>
+                <div className="glass-panel">No APIs are currently available.</div>
+              ) : (
+                allApis.map((apiItem) => (
+                  <article className="card" key={apiItem.apiId}>
+                    <h3>
+                      <Server size={18} /> {apiItem.apiName}
+                    </h3>
+                    <p>{apiItem.apiDescription}</p>
+                    <p
+                      style={{
+                        overflowWrap: 'anywhere',
+                        color: 'var(--text-secondary)',
+                      }}
+                    >
+                      {apiItem.link || 'No base URL returned'}
+                    </p>
+
+                    <button
+                      className="btn"
+                      disabled={loading}
+                      onClick={() => loadPlans(apiItem)}
+                    >
+                      <CreditCard size={16} />
+                      {expandedApiId === apiItem.apiId ? 'Hide plans' : 'View plans'}
+                    </button>
+
+                    {expandedApiId === apiItem.apiId && (
+                      <div className="plans-panel" style={{ marginTop: '1rem' }}>
+                        <h4>Plans — {apiItem.apiName}</h4>
+                        {(plansForApi[apiItem.apiId] || []).length === 0 ? (
+                          <p>No active plans are currently available.</p>
+                        ) : (
+                          (plansForApi[apiItem.apiId] || []).map((plan) => (
+                            <div
+                              key={getPlanId(plan)}
+                              style={{
+                                borderTop: '1px solid var(--border-color)',
+                                padding: '0.75rem 0',
+                              }}
+                            >
+                              <strong>{plan.planName || plan.name}</strong>
+                              <p>{plan.description || ''}</p>
+                              <p>₹{Number(plan.price ?? 0).toFixed(2)}</p>
+                              <p>
+                                {plan.rateLimitPerMinute} requests/minute
+                              </p>
+
+                              {Number(plan.price) === 0 ? (
+                                <button
+                                  className="btn btn-primary"
+                                  disabled={loading}
+                                  onClick={() => handleSubscribeFree(apiItem)}
+                                >
+                                  Subscribe to Free Plan
+                                </button>
+                              ) : (
+                                <button
+                                  className="btn btn-primary"
+                                  disabled={paymentBusy}
+                                  onClick={() => handlePayForPlan(plan, apiItem)}
+                                >
+                                  <CreditCard size={16} />
+                                  {paymentBusy ? 'Processing…' : 'Pay & Subscribe'}
+                                </button>
+                              )}
                             </div>
-                            <button className="btn btn-primary" disabled={paymentBusy || loading} onClick={() => handlePayForPlan(plan, apiItem)}>
-                              <CreditCard size={16} /> {paymentBusy ? 'Processing…' : 'Pay & Subscribe'}
-                            </button>
-                          </div>
-                        ))}
+                          ))
+                        )}
                       </div>
                     )}
-                  </div>
-                );
-              })}
+                  </article>
+                ))
+              )}
             </div>
-          </div>
+          </section>
         )}
 
         {user.role === 'CONSUMER' && activeTab === 'my-subscriptions' && (
-          <div className="animation-fade-in">
-            <h2 style={{ marginBottom: '1.5rem', display: 'flex', alignItems: 'center', gap: '0.75rem' }}><FileText size={28} color="var(--primary)" /> My Subscriptions</h2>
+          <section className="animation-fade-in">
+            <h2>My Subscriptions</h2>
             <div className="grid">
               {subscriptions.length === 0 ? (
-                <div className="glass-panel" style={{ gridColumn: '1 / -1', textAlign: 'center', padding: '4rem 2rem' }}>
-                  <Key size={48} color="var(--text-secondary)" style={{ marginBottom: '1rem', opacity: 0.5 }} />
-                  <h3 style={{ color: 'var(--text-secondary)' }}>No subscriptions yet.</h3>
-                  <p style={{ color: 'var(--text-secondary)' }}>Subscribe to an API to start consuming.</p>
-                </div>
-              ) : subscriptions.map((sub, idx) => (
-                <div key={idx} className="card">
-                  <h3><Activity size={20} color="var(--primary)" /> {sub.apiName}</h3>
-                  <div style={{ marginTop: '1.5rem' }}>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.5rem', fontWeight: 'bold' }}>AUTHENTICATION (API-KEY)</div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'rgba(0,0,0,0.4)', padding: '0.65rem 0.75rem', borderRadius: '8px', border: '1px solid rgba(139, 92, 246, 0.3)' }}>
-                      <code style={{ flex: 1, minWidth: 0, fontFamily: 'var(--mono)', fontSize: '0.9rem', wordBreak: 'break-all', color: '#e879f9' }}>
-                        {revealedKeys[getSubscriptionId(sub)] && subscriptionKeys[getSubscriptionId(sub)]
-                          ? subscriptionKeys[getSubscriptionId(sub)]
-                          : '••••••••••••••••••••••••'}
-                      </code>
-                      <button type="button" className="key-action-btn" title={revealedKeys[getSubscriptionId(sub)] ? 'Hide API key' : 'Reveal API key'} aria-label={revealedKeys[getSubscriptionId(sub)] ? 'Hide API key' : 'Reveal API key'} disabled={keyLoading[getSubscriptionId(sub)] || sub.status !== 'ACTIVE'} onClick={() => handleToggleApiKey(sub)}>
-                        {keyLoading[getSubscriptionId(sub)] ? '…' : revealedKeys[getSubscriptionId(sub)] ? <EyeOff size={17} /> : <Eye size={17} />}
-                      </button>
-                      <button type="button" className="key-action-btn" title="Copy API key" aria-label="Copy API key" disabled={!subscriptionKeys[getSubscriptionId(sub)] || sub.status !== 'ACTIVE'} onClick={() => handleCopyApiKey(sub)}>
-                        {copiedKeyId === getSubscriptionId(sub) ? <Check size={17} /> : <Copy size={17} />}
-                      </button>
-                    </div>
-                  </div>
-                  <div style={{ marginTop: '1.5rem' }}>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.5rem', fontWeight: 'bold' }}>GATEWAY URL</div>
-                    <div style={{ background: 'rgba(0,0,0,0.2)', padding: '0.75rem', borderRadius: '8px', fontFamily: 'var(--mono)', fontSize: '0.9rem', wordBreak: 'break-all', border: '1px solid var(--border-color)' }}>
-                      /proxy/{sub.apiName}
-                    </div>
-                  </div>
-                  <div style={{ marginTop: '1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-                    <span className={`badge ${sub.status === 'ACTIVE' ? 'badge-success' : 'badge-primary'}`}>{sub.status}</span>
-                    <button type="button" className="btn btn-primary" disabled={sub.status !== 'ACTIVE' || keyLoading[getSubscriptionId(sub)]} onClick={() => handleOpenPlayground(sub)}>
-                      <Send size={16} /> {playgroundSubId === getSubscriptionId(sub) ? 'Try API Selected' : 'Try API'}
-                    </button>
-                  </div>
-                  {playgroundSubId === getSubscriptionId(sub) && (
-                    <div className="plans-panel" style={{ marginTop: '1rem' }}>
-                      <div className="plans-panel-heading">
-                        <strong><Braces size={17} style={{ verticalAlign: 'middle', marginRight: '0.4rem' }} /> Request Playground — {sub.apiName}</strong>
-                        <button type="button" className="plans-close" onClick={() => { setPlaygroundSubId(null); setRequestResponse(null); }} aria-label="Close request playground"><X size={16} /></button>
+                <div className="glass-panel">You have no subscriptions yet.</div>
+              ) : (
+                subscriptions.map((subscription) => {
+                  const subId = getId(subscription);
+
+                  return (
+                    <article className="card" key={subId}>
+                      <h3>
+                        <Key size={18} /> {subscription.apiName || `API #${subscription.apiId}`}
+                      </h3>
+                      <p>
+                        Status: <strong>{subscription.status || 'Unknown'}</strong>
+                      </p>
+                      <p>Plan: {subscription.planName || 'Not provided by backend'}</p>
+
+                      <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                        <button
+                          className="btn btn-primary"
+                          onClick={() => {
+                            setSelectedConsumerSubId(subId);
+                            setActiveTab('consumer-sub-analytics');
+                          }}
+                        >
+                          <Activity size={16} /> Analytics
+                        </button>
+                        <button
+                          className="btn"
+                          disabled={subscription.status !== 'ACTIVE' || keyLoading[subId]}
+                          onClick={() => handleToggleApiKey(subscription)}
+                        >
+                          {revealedKeys[subId] ? <EyeOff size={16} /> : <Eye size={16} />}
+                          {revealedKeys[subId] ? 'Hide key' : 'Reveal key'}
+                        </button>
+                        <button
+                          className="btn"
+                          disabled={!subscriptionKeys[subId] || subscription.status !== 'ACTIVE'}
+                          onClick={() => handleCopyApiKey(subscription)}
+                        >
+                          {copiedKeyId === subId ? <Check size={16} /> : <Copy size={16} />}
+                          Copy key
+                        </button>
+                        <button
+                          className="btn"
+                          disabled={subscription.status !== 'ACTIVE'}
+                          onClick={() => openPlayground(subscription)}
+                        >
+                          <Send size={16} /> Try API
+                        </button>
                       </div>
-                      <form onSubmit={handleSendGatewayRequest} style={{ display: 'grid', gap: '1rem', marginTop: '1rem' }}>
-                        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(100px, 0.35fr) minmax(0, 1fr)', gap: '0.75rem' }}>
-                          <div className="form-group" style={{ marginBottom: 0 }}>
-                            <label>Method</label>
-                            <select className="form-input" value={requestMethod} onChange={(e) => setRequestMethod(e.target.value)}>
-                              <option value="GET">GET</option><option value="POST">POST</option><option value="PUT">PUT</option><option value="PATCH">PATCH</option><option value="DELETE">DELETE</option>
-                            </select>
+
+                      {revealedKeys[subId] && subscriptionKeys[subId] && (
+                        <p style={{ overflowWrap: 'anywhere', marginTop: '1rem' }}>
+                          <code>{subscriptionKeys[subId]}</code>
+                        </p>
+                      )}
+
+                      {playgroundSubId === subId && (
+                        <div className="plans-panel" style={{ marginTop: '1rem' }}>
+                          <div
+                            style={{
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                              gap: '1rem',
+                            }}
+                          >
+                            <h4>Request Playground</h4>
+                            <button
+                              className="btn"
+                              onClick={() => {
+                                setPlaygroundSubId(null);
+                                setRequestResponse(null);
+                              }}
+                            >
+                              <X size={16} /> Close
+                            </button>
                           </div>
-                          <div className="form-group" style={{ marginBottom: 0 }}>
-                            <label>Endpoint path</label>
-                            <input className="form-input" value={requestPath} onChange={(e) => setRequestPath(e.target.value)} placeholder="/posts/1" required />
-                          </div>
-                        </div>
-                        <div style={{ background: 'rgba(0,0,0,0.25)', padding: '0.75rem', borderRadius: '8px', overflowWrap: 'anywhere' }}>
-                          <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>GATEWAY REQUEST URL</div>
-                          <code style={{ fontSize: '0.85rem' }}>http://localhost:8080/proxy{requestPath.startsWith('/') ? requestPath : `/${requestPath}`}</code>
-                        </div>
-                        {['POST', 'PUT', 'PATCH'].includes(requestMethod) && (
-                          <div className="form-group" style={{ marginBottom: 0 }}>
-                            <label>JSON request body</label>
-                            <textarea className="form-input" rows={6} value={requestBody} onChange={(e) => setRequestBody(e.target.value)} spellCheck={false} />
-                          </div>
-                        )}
-                        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                          <button type="submit" className="btn btn-primary" disabled={requestLoading || keyLoading[playgroundSubId]}><Send size={16} /> {requestLoading ? 'Sending…' : 'Send Request'}</button>
-                        </div>
-                      </form>
-                      {requestResponse && (
-                        <div style={{ marginTop: '1.25rem', borderTop: '1px solid var(--border-color)', paddingTop: '1rem' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap', marginBottom: '0.75rem' }}>
-                            <strong>Response</strong>
-                            <span className={`badge ${typeof requestResponse.status === 'number' && requestResponse.status < 400 ? 'badge-success' : 'badge-primary'}`}>{requestResponse.status} {requestResponse.statusText || ''}</span>
-                            {requestDuration != null && <span style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}><Clock size={14} style={{ verticalAlign: 'middle' }} /> {requestDuration} ms</span>}
-                          </div>
-                          <pre style={{ maxHeight: '420px', overflow: 'auto', padding: '1rem', borderRadius: '8px', background: 'rgba(0,0,0,0.35)', border: '1px solid var(--border-color)', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: '0.82rem' }}>{typeof requestResponse.data === 'string' ? requestResponse.data : JSON.stringify(requestResponse.data, null, 2)}</pre>
+
+                          <form
+                            onSubmit={sendGatewayRequest}
+                            style={{ display: 'grid', gap: '0.75rem' }}
+                          >
+                            <div className="form-group">
+                              <label>HTTP method</label>
+                              <select
+                                className="form-input"
+                                value={requestMethod}
+                                onChange={(e) => setRequestMethod(e.target.value)}
+                              >
+                                {['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map((method) => (
+                                  <option key={method}>{method}</option>
+                                ))}
+                              </select>
+                            </div>
+
+                            <div className="form-group">
+                              <label>Endpoint path</label>
+                              <input
+                                className="form-input"
+                                value={requestPath}
+                                onChange={(e) => setRequestPath(e.target.value)}
+                                placeholder="/posts/1"
+                                required
+                              />
+                            </div>
+
+                            {['POST', 'PUT', 'PATCH'].includes(requestMethod) && (
+                              <div className="form-group">
+                                <label>JSON body</label>
+                                <textarea
+                                  className="form-input"
+                                  rows={5}
+                                  value={requestBody}
+                                  onChange={(e) => setRequestBody(e.target.value)}
+                                />
+                              </div>
+                            )}
+
+                            <button
+                              className="btn btn-primary"
+                              type="submit"
+                              disabled={requestLoading || keyLoading[subId]}
+                            >
+                              <Send size={16} />
+                              {requestLoading ? 'Sending…' : 'Send request'}
+                            </button>
+                          </form>
+
+                          {requestResponse && (
+                            <div style={{ marginTop: '1rem' }}>
+                              <p>
+                                HTTP {requestResponse.status} {requestResponse.statusText || ''}
+                                {requestDuration != null ? ` · ${requestDuration} ms` : ''}
+                              </p>
+                              <pre
+                                style={{
+                                  whiteSpace: 'pre-wrap',
+                                  overflowWrap: 'anywhere',
+                                  overflowX: 'auto',
+                                }}
+                              >
+                                {typeof requestResponse.data === 'string'
+                                  ? requestResponse.data
+                                  : JSON.stringify(requestResponse.data, null, 2)}
+                              </pre>
+                            </div>
+                          )}
                         </div>
                       )}
-                    </div>
-                  )}
-                </div>
-              ))}
+                    </article>
+                  );
+                })
+              )}
             </div>
-          </div>
+          </section>
+        )}
+
+        {user.role === 'PROVIDER' && activeTab === 'provider-api-analytics' && (
+          <ProviderAnalytics
+            api={myApis.find(
+              (item) => Number(item.apiId) === Number(selectedProviderApiId)
+            )}
+            apiId={selectedProviderApiId}
+            providerId={user.providerId ?? user.userId ?? user.id}
+            onBack={() => setActiveTab('my-apis')}
+          />
+        )}
+
+        {user.role === 'CONSUMER' && activeTab === 'consumer-sub-analytics' && (
+          <ConsumerAnalytics
+            subscription={subscriptions.find(
+              (item) => Number(getId(item)) === Number(selectedConsumerSubId)
+            )}
+            subscriptionId={selectedConsumerSubId}
+            consumerId={user.consumerId ?? user.userId ?? user.id}
+            onBack={() => setActiveTab('my-subscriptions')}
+          />
         )}
       </main>
     </div>
