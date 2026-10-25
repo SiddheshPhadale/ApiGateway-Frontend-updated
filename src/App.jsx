@@ -54,7 +54,7 @@ const normalizeApi = (item) => ({
 const normalizeSubscription = (item) => ({
   ...item,
   subId: item.subId ?? item.subscriptionId ?? item.id,
-  apiId: item.apiId ?? item.api?.apiId,
+  apiId: item.apiId ?? item.api?.apiId ?? item.api?.id,
 });
 
 const getId = (sub) => sub?.subId ?? sub?.subscriptionId ?? sub?.id;
@@ -1393,10 +1393,10 @@ function App() {
         {user.role === 'PROVIDER' && activeTab === 'provider-api-analytics' && (
           <ProviderAnalytics
             api={myApis.find(
-              (item) => Number(item.apiId) === Number(selectedProviderApiId)
+              (item) => String(item.apiId) === String(selectedProviderApiId)
             )}
             apiId={selectedProviderApiId}
-            providerId={user.providerId ?? user.userId ?? user.id}
+            providerId={user.providerId ?? user.userId ?? user.id ?? user.userName ?? '00000000-0000-0000-0000-000000000000'}
             onBack={() => setActiveTab('my-apis')}
           />
         )}
@@ -1404,10 +1404,10 @@ function App() {
         {user.role === 'CONSUMER' && activeTab === 'consumer-sub-analytics' && (
           <ConsumerAnalytics
             subscription={subscriptions.find(
-              (item) => Number(getId(item)) === Number(selectedConsumerSubId)
+              (item) => String(getId(item)) === String(selectedConsumerSubId)
             )}
             subscriptionId={selectedConsumerSubId}
-            consumerId={user.consumerId ?? user.userId ?? user.id}
+            consumerId={user.consumerId ?? user.userId ?? user.id ?? user.userName}
             onBack={() => setActiveTab('my-subscriptions')}
           />
         )}

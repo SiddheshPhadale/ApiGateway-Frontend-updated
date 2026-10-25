@@ -61,7 +61,6 @@ export function AreaLineChart({
     });
   });
   const maxVal = Math.max(...allVals, 100);
-  const minVal = 0;
   const paddingLeft = 45;
   const paddingRight = 20;
   const paddingTop = 20;
@@ -341,8 +340,17 @@ export function DonutChart({
   const radius = 65;
   const strokeWidth = 22;
   const circumference = 2 * Math.PI * radius;
-
-  let accumulatedPercent = 0;
+  const slices = [];
+  let currentOffset = 0;
+  for (let i = 0; i < data.length; i++) {
+    const slice = data[i];
+    const val = slice.value || slice.share || 0;
+    const pct = val / total;
+    const strokeDasharray = `${pct * circumference} ${circumference}`;
+    const strokeDashoffset = -(currentOffset * circumference);
+    currentOffset += pct;
+    slices.push({ ...slice, strokeDasharray, strokeDashoffset });
+  }
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '1.5rem', flexWrap: 'wrap' }}>
@@ -357,13 +365,7 @@ export function DonutChart({
             stroke="rgba(255, 255, 255, 0.05)"
             strokeWidth={strokeWidth}
           />
-          {data.map((slice, idx) => {
-            const val = slice.value || slice.share || 0;
-            const pct = (val / total);
-            const strokeDasharray = `${pct * circumference} ${circumference}`;
-            const strokeDashoffset = -(accumulatedPercent * circumference);
-            accumulatedPercent += pct;
-
+          {slices.map((slice, idx) => {
             const isHovered = hoverSegment === idx;
 
             return (
@@ -375,8 +377,8 @@ export function DonutChart({
                 fill="transparent"
                 stroke={slice.color}
                 strokeWidth={isHovered ? strokeWidth + 4 : strokeWidth}
-                strokeDasharray={strokeDasharray}
-                strokeDashoffset={strokeDashoffset}
+                strokeDasharray={slice.strokeDasharray}
+                strokeDashoffset={slice.strokeDashoffset}
                 strokeLinecap="round"
                 style={{
                   transition: 'all 0.2s ease',
